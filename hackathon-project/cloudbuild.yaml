@@ -1,0 +1,104 @@
+steps:
+  # 1. Build Multi-Agent Container Image
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-image"
+    args:
+      - "build"
+      - "--platform"
+      - "linux/amd64"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/lb-agent-suite:latest"
+      - "."
+
+  # 2. Push Container Image to Artifact Registry
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-image"
+    args:
+      - "push"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/lb-agent-suite:latest"
+
+  # 3. Deploy Skill `run_traffic` Cloud Run Function via Container
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-run-traffic-fn"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        gcloud run deploy run-traffic-fn \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/lb-agent-suite:latest" \
+          --region=${_REGION} \
+          --platform=managed \
+          --port=8080 \
+          --memory=512Mi \
+          --timeout=300s \
+          --set-env-vars="FUNCTION_TARGET=run_traffic_http" \
+          --project=${PROJECT_ID}
+        gcloud run services describe run-traffic-fn --region=${_REGION} --project=${PROJECT_ID} --format="value(status.url)" > /workspace/run_traffic_url.txt
+
+  # 4. Deploy Sub-Agent 1 (`VerifierAgent`) Cloud Run Function via Container
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-verifier-agent-fn"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        gcloud run deploy verifier-agent-fn \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/lb-agent-suite:latest" \
+          --region=${_REGION} \
+          --platform=managed \
+          --port=8080 \
+          --memory=512Mi \
+          --timeout=120s \
+          --set-env-vars="FUNCTION_TARGET=verifier_agent_http" \
+          --project=${PROJECT_ID}
+        gcloud run services describe verifier-agent-fn --region=${_REGION} --project=${PROJECT_ID} --format="value(status.url)" > /workspace/verifier_url.txt
+
+  # 5. Deploy Orchestrator Agent Cloud Run Function via Container
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-orchestrator-agent-fn"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        RUN_TRAFFIC_URL=$$(cat /workspace/run_traffic_url.txt)
+        VERIFIER_URL=$$(cat /workspace/verifier_url.txt)
+        gcloud run deploy orchestrator-agent-fn \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/lb-agent-suite:latest" \
+          --region=${_REGION} \
+          --platform=managed \
+          --port=8080 \
+          --memory=512Mi \
+          --timeout=300s \
+          --set-env-vars="FUNCTION_TARGET=orchestrator_agent_http,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${_REGION},RUN_TRAFFIC_FUNCTION_URL=$${RUN_TRAFFIC_URL},VERIFIER_FUNCTION_URL=$${VERIFIER_URL}" \
+          --project=${PROJECT_ID}
+        gcloud run services describe orchestrator-agent-fn --region=${_REGION} --project=${PROJECT_ID} --format="value(status.url)" > /workspace/orchestrator_url.txt
+
+  # 6. Deploy Public Streamlit Web App to Google Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-public-streamlit-cloud-run"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        ORCHESTRATOR_URL=$$(cat /workspace/orchestrator_url.txt)
+        RUN_TRAFFIC_URL=$$(cat /workspace/run_traffic_url.txt)
+        VERIFIER_URL=$$(cat /workspace/verifier_url.txt)
+        gcloud run deploy lb-traffic-verifier-ui \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/lb-agent-suite:latest" \
+          --region=${_REGION} \
+          --platform=managed \
+          --port=8080 \
+          --memory=1Gi \
+          --timeout=300s \
+          --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${_REGION},ORCHESTRATOR_FUNCTION_URL=$${ORCHESTRATOR_URL},RUN_TRAFFIC_FUNCTION_URL=$${RUN_TRAFFIC_URL},VERIFIER_FUNCTION_URL=$${VERIFIER_URL}" \
+          --project=${PROJECT_ID}
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/lb-agent-suite:latest"
+
+substitutions:
+  _REGION: "us-central1"
+  _AR_REPO: "cloud-run-agents"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
