@@ -13,7 +13,7 @@ import base64
 from datetime import datetime, timezone
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import urllib.request
 import uuid
 
@@ -281,15 +281,27 @@ class OrchestratorAgent:
         auth_token: Optional[str] = None,
         cookie: Optional[str] = None,
         human_provided_input: Optional[str] = None,
-        open_browser_on_login: bool = True,
+        open_browser_on_login: Optional[bool] = None,
         interactive_cli: bool = False,
         screenshot_path: Optional[str] = None,
         screenshot_bytes: Optional[bytes] = None,
-        auto_capture_screenshot: bool = False,
+        auto_capture_screenshot: Optional[bool] = None,
     ) -> LBTrafficVerificationBundle:
         """Step 3: Delegate to Verifier Agent (Sub-Agent 1) via Cloud Run Function or local sub-agent."""
-        # Do not open a server-side browser when running inside a headless Cloud Run container
-        should_open_local_browser = open_browser_on_login and not settings.running_in_cloud_run
+        # Orchestrator owns runtime environment & browser-capture policy:
+        if open_browser_on_login is None:
+            should_open_local_browser = not settings.running_in_cloud_run
+        else:
+            should_open_local_browser = open_browser_on_login and not settings.running_in_cloud_run
+
+        if auto_capture_screenshot is None:
+            should_auto_capture = (
+                should_open_local_browser
+                and not bool(self.verifier_function_url)
+                and not bool(human_provided_input or auth_token or cookie or screenshot_path or screenshot_bytes)
+            )
+        else:
+            should_auto_capture = auto_capture_screenshot
 
         ver_res: Optional[MetricVerificationResult] = None
         ver_msg: Optional[AgentMessage] = None
@@ -302,7 +314,7 @@ class OrchestratorAgent:
                     "cookie": cookie,
                     "human_provided_input": human_provided_input,
                     "screenshot_path": screenshot_path,
-                    "auto_capture_screenshot": auto_capture_screenshot,
+                    "auto_capture_screenshot": should_auto_capture,
                 }
                 if screenshot_bytes:
                     fn_payload["screenshot_base64"] = base64.b64encode(screenshot_bytes).decode("ascii")
@@ -345,7 +357,7 @@ class OrchestratorAgent:
                 interactive_cli=interactive_cli,
                 screenshot_path=screenshot_path,
                 screenshot_bytes=screenshot_bytes,
-                auto_capture_screenshot=auto_capture_screenshot,
+                auto_capture_screenshot=should_auto_capture,
             )
             if self.verifier_function_url:
                 ver_msg.bullets.insert(
@@ -407,8 +419,10 @@ class OrchestratorAgent:
         auth_token: Optional[str] = None,
         cookie: Optional[str] = None,
         human_provided_input: Optional[str] = None,
-        open_browser_on_login: bool = True,
+        open_browser_on_login: Optional[bool] = None,
         interactive_cli: bool = False,
+        auto_capture_screenshot: Optional[bool] = None,
+        on_step: Optional[Callable[[int, LBTrafficVerificationBundle], None]] = None,
     ) -> LBTrafficVerificationBundle:
         """Execute Orchestrator -> `run_traffic` (100 curl requests) -> `VerifierAgent.verify_metric`."""
         bundle = self.create_bundle(
@@ -416,8 +430,16 @@ class OrchestratorAgent:
             target_url=target_url,
             num_requests=num_requests,
         )
+        if on_step:
+            on_step(1, bundle)
         bundle = self.step_accept_and_plan(bundle)
+
+        if on_step:
+            on_step(2, bundle)
         bundle = self.step_run_traffic_skill(bundle)
+
+        if on_step:
+            on_step(3, bundle)
         bundle = self.step_invoke_verifier_subagent(
             bundle,
             auth_token=auth_token,
@@ -425,6 +447,7 @@ class OrchestratorAgent:
             human_provided_input=human_provided_input,
             open_browser_on_login=open_browser_on_login,
             interactive_cli=interactive_cli,
+            auto_capture_screenshot=auto_capture_screenshot,
         )
         return bundle
 
