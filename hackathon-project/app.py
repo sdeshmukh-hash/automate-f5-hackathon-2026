@@ -287,43 +287,30 @@ if submitted:
             run_traffic_function_url=run_traffic_fn_in.strip(),
             verifier_function_url=verifier_fn_in.strip(),
         )
-        bundle = orchestrator.create_bundle(
-            lb_name=lb_name_in.strip(),
-            target_url=target_url_in.strip() or None,
-            num_requests=int(num_req_in),
-        )
 
         with st.status("🤖 Running Orchestrator -> `run_traffic` -> `VerifierAgent.verify_metric`...", expanded=True) as sbox:
-            st.session_state.lb_stage = 1
-            topo_box.markdown(render_lb_topology(1), unsafe_allow_html=True)
-            st.write(f"🧭 **Orchestrator Agent** accepted Load Balancer `{bundle.lb_name}`...")
-            bundle = orchestrator.step_accept_and_plan(bundle)
+            def _on_orchestrator_step(stage: int, b: LBTrafficVerificationBundle) -> None:
+                st.session_state.lb_stage = stage
+                topo_box.markdown(render_lb_topology(stage), unsafe_allow_html=True)
+                if stage == 1:
+                    st.write(f"🧭 **Orchestrator Agent** accepted Load Balancer `{b.lb_name}`...")
+                elif stage == 2:
+                    st.write(f"⚡ **Skill `run_traffic`** sending **{b.num_requests} real curl requests** to `{b.target_url}`...")
+                elif stage == 3:
+                    st.write(f"🔍 **Verifier Agent (Sub-Agent 1)** invoking `verify_metric` on `{b.usage_url}`...")
 
-            st.session_state.lb_stage = 2
-            topo_box.markdown(render_lb_topology(2), unsafe_allow_html=True)
-            st.write(f"⚡ **Skill `run_traffic`** sending **{bundle.num_requests} real curl requests** to `{bundle.target_url}`...")
             try:
-                bundle = orchestrator.step_run_traffic_skill(bundle)
-            except Exception as exc:
-                st.error(f"❌ Error during `run_traffic`: {exc}")
-                st.info(
-                    "💡 If `run-traffic-fn` returned 403 Forbidden or failed, clear the "
-                    "'Cloud Run Fn: run_traffic URL' in the left sidebar to execute `run_traffic` "
-                    "directly from within the container."
+                bundle = orchestrator.run_workflow(
+                    lb_name=lb_name_in.strip(),
+                    target_url=target_url_in.strip() or None,
+                    num_requests=int(num_req_in),
+                    auth_token=auth_token_input or None,
+                    cookie=cookie_input or None,
+                    on_step=_on_orchestrator_step,
                 )
+            except Exception as exc:
+                st.error(f"❌ Error during Orchestrator workflow: {exc}")
                 st.stop()
-
-            st.session_state.lb_stage = 3
-            topo_box.markdown(render_lb_topology(3), unsafe_allow_html=True)
-            st.write(f"🔍 **Verifier Agent (Sub-Agent 1)** invoking `verify_metric` on `{bundle.usage_url}`...")
-            bundle = orchestrator.step_invoke_verifier_subagent(
-                bundle,
-                auth_token=auth_token_input or None,
-                cookie=cookie_input or None,
-                open_browser_on_login=not settings.running_in_cloud_run,
-                interactive_cli=False,
-                auto_capture_screenshot=not bool(verifier_fn_in.strip()),
-            )
 
             if bundle.needs_human_login:
                 st.session_state.lb_stage = 3
