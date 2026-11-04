@@ -26,9 +26,3 @@ A zero-simulation AI multi-agent system built for **Volterra / F5 Distributed Cl
 cd /Users/s.deshmukh/.gemini/antigravity/scratch/hackathon-project
 bash deploy/deploy_gcp.sh vesio-dev us-central1
 ```
-
-Or deploy via **Google Cloud Build** ([`cloudbuild.yaml`](file:///Users/s.deshmukh/.gemini/antigravity/scratch/hackathon-project/cloudbuild.yaml)):
-
-```bash
-gcloud builds submit --config=cloudbuild.yaml --project=vesio-dev
-```
